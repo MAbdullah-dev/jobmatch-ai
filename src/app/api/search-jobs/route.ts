@@ -71,6 +71,10 @@ export async function POST(request: NextRequest) {
 
     // Search LinkedIn if source is 'linkedin' or 'all'
     if (source === 'linkedin' || source === 'all') {
+      // Add a delay before LinkedIn request to avoid hitting rate limits immediately after Google Jobs
+      console.log(`Waiting 3 seconds before LinkedIn request to avoid rate limits...`);
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      
       console.log(`Searching LinkedIn Jobs with query: "${query}"`);
       const linkedinJobs = await searchLinkedInJobs(rapidApiKey, query, location, remoteOnly);
       console.log(`Found ${linkedinJobs.length} LinkedIn Jobs`);
@@ -192,56 +196,104 @@ async function searchLinkedInJobs(
   location?: string,
   remoteOnly: boolean = false
 ): Promise<NormalizedJob[]> {
-  const rapidApiHost = 'active-jobs-db.p.rapidapi.com';
+  const rapidApiHost = 'linkedin-job-search-api.p.rapidapi.com';
   const jobs: NormalizedJob[] = [];
 
-  try {
-    // Build query parameters for LinkedIn API
-    const params = new URLSearchParams({
-      limit: '50', // Get up to 50 jobs
-      offset: '0',
-      title_filter: `"${query}"`,
-      description_type: 'text',
-    });
+  // Retry logic for rate limiting
+  const maxRetries = 3;
+  const baseDelay = 2000; // 2 seconds base delay
 
-    // Add location filter if provided
-    if (location && location.trim()) {
-      // Format location for API (e.g., "United States" OR "United Kingdom")
-      params.append('location_filter', `"${location.trim()}"`);
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      // Add delay between retries (exponential backoff)
+      if (attempt > 0) {
+        const delay = baseDelay * Math.pow(2, attempt - 1); // 2s, 4s, 8s
+        console.log(`LinkedIn API rate limited. Waiting ${delay}ms before retry ${attempt + 1}/${maxRetries}...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+
+      // Build query parameters for LinkedIn API
+      const params = new URLSearchParams({
+        limit: '30', // Reduced from 50 to avoid rate limits
+        offset: '0',
+        title_filter: `"${query}"`,
+        description_type: 'text',
+      });
+
+      // Add location filter if provided
+      if (location && location.trim()) {
+        // Format location for API (e.g., "United States" OR "United Kingdom")
+        params.append('location_filter', `"${location.trim()}"`);
+      }
+
+      // Add remote filter if requested
+      if (remoteOnly) {
+        params.append('remote', 'true');
+      }
+
+      // Use the new LinkedIn API endpoint: active-jb-24h (jobs from last 24 hours)
+      const url = `https://${rapidApiHost}/active-jb-24h?${params.toString()}`;
+
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'X-RapidAPI-Key': rapidApiKey,
+          'X-RapidAPI-Host': rapidApiHost,
+        },
+      });
+
+      if (!response.ok) {
+        // Try to get error details from response
+        let errorDetails = '';
+        try {
+          const errorText = await response.text();
+          errorDetails = errorText.substring(0, 200);
+        } catch (e) {
+          // Ignore error reading response
+        }
+        
+        // Handle rate limiting (429) with retry
+        if (response.status === 429 && attempt < maxRetries - 1) {
+          console.warn(`LinkedIn API rate limited (429). Attempt ${attempt + 1}/${maxRetries}. Error: ${errorDetails}`);
+          continue; // Retry with delay
+        }
+        
+        // For other errors or final retry failure, log and return empty
+        if (response.status === 429) {
+          console.error(`LinkedIn API rate limited (429). Max retries reached. Skipping LinkedIn jobs. Error: ${errorDetails}`);
+        } else if (response.status === 401 || response.status === 403) {
+          console.error(`LinkedIn API authentication error (${response.status}). Check your RapidAPI key. Error: ${errorDetails}`);
+        } else {
+          console.error(`LinkedIn API error: ${response.status} ${response.statusText}. Error: ${errorDetails}`);
+        }
+        return jobs; // Return empty array on error
+      }
+
+      const data = await response.json();
+
+      if (Array.isArray(data) && data.length > 0) {
+        const normalizedJobs = data
+          .slice(0, 30) // Limit to 30 jobs
+          .map((job: LinkedInJob) => normalizeLinkedInJob(job))
+          .filter((job: NormalizedJob) => job.title && job.company); // Filter out invalid jobs
+
+        jobs.push(...normalizedJobs);
+        console.log(`Successfully fetched ${jobs.length} LinkedIn jobs on attempt ${attempt + 1}`);
+        break; // Success, exit retry loop
+      } else {
+        // No jobs found, but not an error - return empty
+        break;
+      }
+    } catch (error) {
+      console.error(`Error fetching LinkedIn Jobs (attempt ${attempt + 1}/${maxRetries}):`, error);
+      
+      // If it's the last attempt, return empty array
+      if (attempt === maxRetries - 1) {
+        console.error('Max retries reached for LinkedIn API. Skipping LinkedIn jobs.');
+        return jobs;
+      }
+      // Otherwise, continue to next retry
     }
-
-    // Add remote filter if requested
-    if (remoteOnly) {
-      params.append('remote', 'true');
-    }
-
-    const url = `https://${rapidApiHost}/active-ats-7d?${params.toString()}`;
-
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: {
-        'X-RapidAPI-Key': rapidApiKey,
-        'X-RapidAPI-Host': rapidApiHost,
-      },
-    });
-
-    if (!response.ok) {
-      console.error(`LinkedIn API error: ${response.status} ${response.statusText}`);
-      return jobs;
-    }
-
-    const data = await response.json();
-
-    if (Array.isArray(data) && data.length > 0) {
-      const normalizedJobs = data
-        .slice(0, 50) // Limit to 50 jobs
-        .map((job: LinkedInJob) => normalizeLinkedInJob(job))
-        .filter((job: NormalizedJob) => job.title && job.company); // Filter out invalid jobs
-
-      jobs.push(...normalizedJobs);
-    }
-  } catch (error) {
-    console.error('Error fetching LinkedIn Jobs:', error);
   }
 
   return jobs;
