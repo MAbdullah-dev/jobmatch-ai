@@ -167,7 +167,7 @@ async function searchGoogleJobs(
           
           // Avoid duplicates
           const existingIds = new Set(jobs.map(j => j.id));
-          const newJobs = normalizedJobs.filter(job => !existingIds.has(job.id));
+          const newJobs = normalizedJobs.filter((job: NormalizedJob) => !existingIds.has(job.id));
           jobs.push(...newJobs);
         }
 
