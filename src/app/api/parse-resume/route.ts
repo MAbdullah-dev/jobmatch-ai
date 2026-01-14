@@ -71,6 +71,7 @@ export async function POST(
       // Handle CommonJS module in Next.js API routes (works in serverless)
       try {
         // Dynamic import for serverless compatibility
+        // @ts-ignore - pdf-parse types may not be perfect
         const pdfParseModule = await import('pdf-parse');
         const pdfParse = pdfParseModule.default || pdfParseModule;
         
