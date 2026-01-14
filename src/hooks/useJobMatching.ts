@@ -36,7 +36,8 @@ export function useJobMatching(): UseJobMatchingReturn {
       const searchQuery = primaryRole;
       
       // Search both Google Jobs and LinkedIn for more results
-      const searchResult = await searchJobs(searchQuery, undefined, 2, 'all', false); // Get jobs from all sources
+      // Use 3 pages for Google Jobs to get more results
+      const searchResult = await searchJobs(searchQuery, undefined, 3, 'all', false); // Get jobs from all sources
 
       if (!searchResult.jobs || searchResult.jobs.length === 0) {
         setError('No jobs found. Try adjusting your resume or search criteria.');

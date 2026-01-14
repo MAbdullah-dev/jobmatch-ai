@@ -67,22 +67,51 @@ export async function POST(
     let extractedText = '';
 
     if (isPDF) {
-      // Use pdf-parse for PDF files
-      // Handle CommonJS module in Next.js API routes (works in serverless)
+      // Use pdf-parse for PDF files (with proper Next.js serverless handling)
       try {
-        // Dynamic import for serverless compatibility
-        // @ts-ignore - pdf-parse types may not be perfect
-        const pdfParseModule = await import('pdf-parse');
-        const pdfParse = pdfParseModule.default || pdfParseModule;
-        
         // Ensure buffer is valid
         if (!buffer || buffer.length === 0) {
           throw new Error('Invalid PDF buffer');
         }
         
+        // Load pdf-parse using createRequire for Next.js serverless compatibility
+        // This approach works around CommonJS/ESM issues in Next.js API routes
+        const { createRequire } = await import('module');
+        const path = await import('path');
+        
+        // Use package.json as base for createRequire (most reliable in serverless)
+        const basePath = path.resolve(process.cwd(), 'package.json');
+        const require = createRequire(basePath);
+        
+        // Load pdf-parse - it may throw test file errors during init, but still works
+        let pdfParse: any;
+        try {
+          pdfParse = require('pdf-parse');
+        } catch (requireError: any) {
+          // If it's a test file error, the module might still be partially loaded
+          // Try to access it anyway - pdf-parse often works despite test file errors
+          if (requireError?.message?.includes('test') || requireError?.code === 'ENOENT') {
+            // Suppress the error and try to use the module anyway
+            // pdf-parse can work even if test files are missing
+            try {
+              pdfParse = require('pdf-parse');
+            } catch (retryError) {
+              // If it still fails, try dynamic import as fallback
+              const pdfModule = await import('pdf-parse');
+              pdfParse = pdfModule.default || pdfModule;
+            }
+          } else {
+            throw requireError;
+          }
+        }
+        
+        // Verify pdfParse is a function
+        if (typeof pdfParse !== 'function') {
+          throw new Error('pdf-parse module did not export a function');
+        }
+        
         // Parse the PDF buffer
         const pdfData = await pdfParse(buffer, {
-          // Options to help with serverless environments
           max: 0, // No page limit
         });
         

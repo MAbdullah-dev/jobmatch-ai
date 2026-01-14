@@ -63,15 +63,21 @@ export async function POST(request: NextRequest) {
 
     // Search Google Jobs if source is 'google-jobs' or 'all'
     if (source === 'google-jobs' || source === 'all') {
+      console.log(`Searching Google Jobs with query: "${query}", pages: ${numPages}`);
       const googleJobs = await searchGoogleJobs(rapidApiKey, query, location, numPages);
+      console.log(`Found ${googleJobs.length} Google Jobs`);
       allJobs.push(...googleJobs);
     }
 
     // Search LinkedIn if source is 'linkedin' or 'all'
     if (source === 'linkedin' || source === 'all') {
+      console.log(`Searching LinkedIn Jobs with query: "${query}"`);
       const linkedinJobs = await searchLinkedInJobs(rapidApiKey, query, location, remoteOnly);
+      console.log(`Found ${linkedinJobs.length} LinkedIn Jobs`);
       allJobs.push(...linkedinJobs);
     }
+    
+    console.log(`Total jobs before filtering: ${allJobs.length} (Google: ${allJobs.filter(j => j.source === 'Google Jobs').length}, LinkedIn: ${allJobs.filter(j => j.source === 'LinkedIn').length})`);
 
     // Filter remote jobs if requested
     const filteredJobs = remoteOnly
@@ -105,68 +111,78 @@ async function searchGoogleJobs(
   rapidApiKey: string,
   query: string,
   location?: string,
-  numPages: number = 1
+  numPages: number = 3
 ): Promise<NormalizedJob[]> {
   const rapidApiHost = process.env.RAPIDAPI_HOST || 'jsearch.p.rapidapi.com';
   const jobs: NormalizedJob[] = [];
 
   const cleanQuery = query.trim();
-  const searchQuery = location && location.trim()
-    ? `${cleanQuery} in ${location.trim()}`
-    : cleanQuery;
+  
+  // Try multiple query formats to maximize results
+  const queryVariants = [
+    cleanQuery, // Original query
+    location && location.trim() ? `${cleanQuery} in ${location.trim()}` : null,
+    location && location.trim() ? `${cleanQuery} jobs in ${location.trim()}` : null,
+  ].filter(Boolean) as string[];
 
-  for (let page = 0; page < numPages; page++) {
-    const url = `https://${rapidApiHost}/search?query=${encodeURIComponent(searchQuery)}&page=${page + 1}`;
+  for (const searchQuery of queryVariants) {
+    if (jobs.length >= 50) break; // Stop if we have enough jobs
+    
+    for (let page = 1; page <= numPages; page++) {
+      if (jobs.length >= 50) break; // Stop if we have enough jobs
+      
+      const url = `https://${rapidApiHost}/search?query=${encodeURIComponent(searchQuery)}&page=${page}`;
 
-    try {
-      const response = await fetch(url, {
-        method: 'GET',
-        headers: {
-          'X-RapidAPI-Key': rapidApiKey,
-          'X-RapidAPI-Host': rapidApiHost,
-        },
-      });
+      try {
+        const response = await fetch(url, {
+          method: 'GET',
+          headers: {
+            'X-RapidAPI-Key': rapidApiKey,
+            'X-RapidAPI-Host': rapidApiHost,
+          },
+        });
 
-      if (!response.ok) {
-        console.error(`JSearch API error: ${response.status}`);
-        if (response.status === 400 && page === 0) {
-          // Try simpler query
-          const simpleUrl = `https://${rapidApiHost}/search?query=${encodeURIComponent(query)}&page=1`;
-          const simpleResponse = await fetch(simpleUrl, {
-            method: 'GET',
-            headers: {
-              'X-RapidAPI-Key': rapidApiKey,
-              'X-RapidAPI-Host': rapidApiHost,
-            },
-          });
-
-          if (simpleResponse.ok) {
-            const simpleData = await simpleResponse.json();
-            if (simpleData.data && Array.isArray(simpleData.data)) {
-              const normalizedJobs = simpleData.data.map((job: JSearchJob) => normalizeGoogleJob(job));
-              jobs.push(...normalizedJobs);
-              break;
-            }
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error(`JSearch API error (${response.status}):`, errorText.substring(0, 200));
+          
+          // If 400 error on first page, try next query variant
+          if (response.status === 400 && page === 1) {
+            break; // Try next query variant
           }
+          continue; // Try next page
         }
-        continue;
-      }
 
-      const data = await response.json();
-      if (data.data && Array.isArray(data.data)) {
-        const normalizedJobs = data.data.map((job: JSearchJob) => normalizeGoogleJob(job));
-        jobs.push(...normalizedJobs);
-      }
+        const data = await response.json();
+        
+        // Log response for debugging
+        if (page === 1) {
+          console.log(`Google Jobs search "${searchQuery}": Found ${data.data?.length || 0} jobs on page ${page}`);
+        }
+        
+        if (data.data && Array.isArray(data.data) && data.data.length > 0) {
+          const normalizedJobs = data.data
+            .map((job: JSearchJob) => normalizeGoogleJob(job))
+            .filter((job: NormalizedJob) => job.title && job.company); // Filter invalid jobs
+          
+          // Avoid duplicates
+          const existingIds = new Set(jobs.map(j => j.id));
+          const newJobs = normalizedJobs.filter(job => !existingIds.has(job.id));
+          jobs.push(...newJobs);
+        }
 
-      if (!data.data || data.data.length === 0 || jobs.length >= 50) {
-        break;
+        // If no more results, try next query variant
+        if (!data.data || data.data.length === 0) {
+          break;
+        }
+      } catch (error) {
+        console.error(`Error fetching Google Jobs (query: "${searchQuery}", page: ${page}):`, error);
+        // Continue to next page/query
       }
-    } catch (error) {
-      console.error('Error fetching Google Jobs:', error);
-      continue;
     }
   }
 
+  console.log(`Total Google Jobs found: ${jobs.length}`);
   return jobs;
 }
 
