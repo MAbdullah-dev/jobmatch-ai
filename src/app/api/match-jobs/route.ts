@@ -20,6 +20,8 @@ interface Job {
   description: string;
   apply_url: string;
   source: string;
+  url?: string;
+  isRemote?: boolean;
 }
 
 interface MatchedJob {
