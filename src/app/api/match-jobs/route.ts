@@ -1,10 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import OpenAI from 'openai';
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-
 interface ParsedResume {
   primaryRole: string;
   skills: string[];
@@ -37,6 +33,19 @@ interface MatchedJob {
 
 export async function POST(request: NextRequest) {
   try {
+    // Initialize OpenAI client inside the handler to avoid build-time errors
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      return NextResponse.json(
+        { error: 'OpenAI API key not configured' },
+        { status: 500 }
+      );
+    }
+
+    const openai = new OpenAI({
+      apiKey,
+    });
+
     const body = await request.json();
     const { resume, jobs }: { resume: ParsedResume; jobs: Job[] } = body;
 
