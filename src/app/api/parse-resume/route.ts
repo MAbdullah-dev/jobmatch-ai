@@ -68,22 +68,53 @@ export async function POST(
 
     if (isPDF) {
       // Use pdf-parse for PDF files
-      // Dynamic require to handle CommonJS module in Next.js API routes
+      // Handle CommonJS module in Next.js API routes (works in serverless)
       try {
-        // Use createRequire for proper Node.js compatibility
-        const { createRequire } = await import('module');
-        // @ts-ignore - createRequire works in Node.js, import.meta.url may not be available
-        const require = createRequire(process.cwd() + '/package.json');
-        const pdfParse = require('pdf-parse');
-        const pdfData = await pdfParse(buffer);
+        // Dynamic import for serverless compatibility
+        const pdfParseModule = await import('pdf-parse');
+        const pdfParse = pdfParseModule.default || pdfParseModule;
+        
+        // Ensure buffer is valid
+        if (!buffer || buffer.length === 0) {
+          throw new Error('Invalid PDF buffer');
+        }
+        
+        // Parse the PDF buffer
+        const pdfData = await pdfParse(buffer, {
+          // Options to help with serverless environments
+          max: 0, // No page limit
+        });
+        
         extractedText = pdfData.text || '';
-      } catch (pdfError) {
-        console.error('PDF parsing error:', pdfError);
+        
+        if (!extractedText || extractedText.trim().length === 0) {
+          throw new Error('No text extracted from PDF - file may be image-based or corrupted');
+        }
+      } catch (pdfError: any) {
+        console.error('PDF parsing error details:', {
+          message: pdfError?.message,
+          stack: pdfError?.stack,
+          name: pdfError?.name,
+          bufferLength: buffer?.length,
+          errorType: typeof pdfError,
+        });
+        
+        // Provide user-friendly error message
+        const errorMessage = pdfError?.message || 'Unknown error';
+        let userMessage = 'Failed to parse PDF file. ';
+        
+        if (errorMessage.includes('password') || errorMessage.includes('encrypted')) {
+          userMessage += 'The PDF appears to be password-protected. Please remove the password and try again.';
+        } else if (errorMessage.includes('corrupted') || errorMessage.includes('invalid')) {
+          userMessage += 'The PDF file appears to be corrupted. Please try a different file.';
+        } else if (errorMessage.includes('No text extracted')) {
+          userMessage += 'The PDF appears to be image-based or contains no extractable text. Please use a text-based PDF.';
+        } else {
+          userMessage += 'The file may be corrupted, password-protected, or in an unsupported format.';
+        }
+        
         return NextResponse.json<ErrorResponse>(
-          {
-            error:
-              'Failed to parse PDF file. The file may be corrupted or password-protected.',
-          },
+          { error: userMessage },
           { status: 500 }
         );
       }
